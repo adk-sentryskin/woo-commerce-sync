@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: woocommerce
+      POSTGRES_PASSWORD: woocommerce123
+      POSTGRES_DB: woocommerce_sync
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U woocommerce -d woocommerce_sync"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8002:8002"
+    environment:
+      DB_DSN: postgresql://woocommerce:woocommerce123@db:5432/woocommerce_sync?options=-c%20search_path=woocommerce_sync
+      API_KEY: ${API_KEY:-your_api_key_here}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      APP_URL: ${APP_URL:-http://localhost:8002}
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-true}
+      ENABLE_EMBEDDINGS: ${ENABLE_EMBEDDINGS:-false}
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+volumes:
+  postgres_data:
