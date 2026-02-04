@@ -158,7 +158,7 @@ jobs:
             --timeout=300
             --allow-unauthenticated
             --set-env-vars=ENVIRONMENT=development,DEBUG=true,LOG_LEVEL=INFO,GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},ENABLE_SCHEDULER=true,RECONCILIATION_HOUR=3,RECONCILIATION_MINUTE=0,ENABLE_EMBEDDINGS=true
-            --set-secrets=DB_DSN=DB_DSN:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,API_KEY=API_KEY:latest,WEBHOOK_SECRET=WEBHOOK_SECRET:latest
+            --set-secrets=DB_DSN=DB_DSN:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,API_KEY=API_KEY:latest,APP_URL=APP_URL:latest
 
       - name: Verify deployment
         run: |
@@ -207,7 +207,7 @@ jobs:
             --concurrency=80
             --allow-unauthenticated
             --set-env-vars=ENVIRONMENT=production,DEBUG=false,LOG_LEVEL=WARNING,GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},ENABLE_SCHEDULER=true,RECONCILIATION_HOUR=3,RECONCILIATION_MINUTE=0,ENABLE_EMBEDDINGS=true
-            --set-secrets=DB_DSN=DB_DSN_PROD:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,API_KEY=API_KEY_PROD:latest,WEBHOOK_SECRET=WEBHOOK_SECRET_PROD:latest
+            --set-secrets=DB_DSN=DB_DSN_PROD:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,API_KEY=API_KEY_PROD:latest,APP_URL=APP_URL_PROD:latest
 
       - name: Verify deployment
         run: |
