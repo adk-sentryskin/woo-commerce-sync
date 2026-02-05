@@ -3,7 +3,12 @@ set -e
 
 # =============================================================================
 # Cloud Run Deployment Script for WooCommerce Sync Service
-# Usage: ./deploy.sh [staging|production]
+# Usage: ./deploy.sh [development|production]
+#
+# This script is aligned with .github/workflows/deploy.yml for consistency
+# between manual and CI/CD deployments.
+#
+# Secrets are managed via Google Cloud Secret Manager (not .env file)
 # =============================================================================
 
 # Colors for output
@@ -13,13 +18,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Get environment from argument (default: staging)
-ENVIRONMENT="${1:-staging}"
+# Get environment from argument (default: development)
+ENVIRONMENT="${1:-development}"
 
 # Validate environment
-if [ "$ENVIRONMENT" != "staging" ] && [ "$ENVIRONMENT" != "production" ]; then
+if [ "$ENVIRONMENT" != "development" ] && [ "$ENVIRONMENT" != "production" ]; then
     echo -e "${RED}Error: Invalid environment '$ENVIRONMENT'${NC}"
-    echo "Usage: $0 [staging|production]"
+    echo "Usage: $0 [development|production]"
     exit 1
 fi
 
@@ -28,51 +33,52 @@ echo -e "${YELLOW}Environment: ${ENVIRONMENT}${NC}"
 echo ""
 
 # =============================================================================
-# Load Environment Variables
-# =============================================================================
-
-if [ -f .env ]; then
-    echo -e "${YELLOW}Loading environment variables from .env file...${NC}"
-    set -a
-    source <(grep -v '^#' .env | grep -v '^$' | sed 's/\r$//')
-    set +a
-else
-    echo -e "${RED}Error: .env file not found. Please create one from .env.example${NC}"
-    exit 1
-fi
-
-# =============================================================================
-# Configuration
+# Configuration (aligned with .github/workflows/deploy.yml)
 # =============================================================================
 
 PROJECT_ID="${GCP_PROJECT_ID:-shopify-473015}"
 REGION="${GCP_REGION:-us-central1}"
 
-# Environment-specific configuration
-if [ "$ENVIRONMENT" = "staging" ]; then
-    SERVICE_NAME="woocommerce-sync-staging"
-    MEMORY="512Mi"
+# Environment-specific configuration (aligned with deploy.yml)
+if [ "$ENVIRONMENT" = "development" ]; then
+    SERVICE_NAME="woocommerce-sync-dev"
+    MEMORY="1Gi"
     CPU="1"
     MIN_INSTANCES="0"
-    MAX_INSTANCES="5"
-    TIMEOUT="300"
-    CONCURRENCY="80"
+    MAX_INSTANCES="10"
     LOG_LEVEL="INFO"
     DEBUG="true"
+    CONCURRENCY=""
+    # Secret names for development
+    DB_DSN_SECRET="DB_DSN"
+    API_KEY_SECRET="API_KEY"
+    APP_URL_SECRET="APP_URL"
 else  # production
     SERVICE_NAME="woocommerce-sync"
-    MEMORY="1Gi"
+    MEMORY="2Gi"
     CPU="2"
     MIN_INSTANCES="1"
-    MAX_INSTANCES="20"
-    TIMEOUT="300"
-    CONCURRENCY="80"
+    MAX_INSTANCES="100"
     LOG_LEVEL="WARNING"
     DEBUG="false"
+    CONCURRENCY="80"
+    # Secret names for production (with _PROD suffix)
+    DB_DSN_SECRET="DB_DSN_PROD"
+    API_KEY_SECRET="API_KEY_PROD"
+    APP_URL_SECRET="APP_URL_PROD"
 fi
 
-IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
-APP_PORT="${APP_PORT:-8080}"
+IMAGE_NAME="gcr.io/${PROJECT_ID}/woocommerce-sync"
+
+# Load local environment variables from .env file (optional, for overrides)
+if [ -f ".env" ]; then
+    echo -e "${YELLOW}Loading local overrides from .env file...${NC}"
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | sed 's/\r$//')
+    set +a
+else
+    echo -e "${YELLOW}Note: .env file not found. Using defaults and Secret Manager for secrets.${NC}"
+fi
 
 # =============================================================================
 # Production Confirmation
@@ -122,6 +128,27 @@ echo "   Log Level:      $LOG_LEVEL"
 echo ""
 
 # =============================================================================
+# Build Environment Variables (aligned with deploy.yml)
+# =============================================================================
+
+# Environment variables (non-secret values)
+ENV_VARS="ENVIRONMENT=${ENVIRONMENT}"
+ENV_VARS="${ENV_VARS},DEBUG=${DEBUG}"
+ENV_VARS="${ENV_VARS},LOG_LEVEL=${LOG_LEVEL}"
+ENV_VARS="${ENV_VARS},GCP_PROJECT_ID=${PROJECT_ID}"
+ENV_VARS="${ENV_VARS},GCP_REGION=${REGION}"
+ENV_VARS="${ENV_VARS},ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}"
+ENV_VARS="${ENV_VARS},RECONCILIATION_HOUR=${RECONCILIATION_HOUR:-3}"
+ENV_VARS="${ENV_VARS},RECONCILIATION_MINUTE=${RECONCILIATION_MINUTE:-0}"
+ENV_VARS="${ENV_VARS},ENABLE_EMBEDDINGS=${ENABLE_EMBEDDINGS:-true}"
+
+# Secrets (using Google Cloud Secret Manager - aligned with deploy.yml)
+SECRETS="DB_DSN=${DB_DSN_SECRET}:latest"
+SECRETS="${SECRETS},ENCRYPTION_KEY=ENCRYPTION_KEY:latest"
+SECRETS="${SECRETS},API_KEY=${API_KEY_SECRET}:latest"
+SECRETS="${SECRETS},APP_URL=${APP_URL_SECRET}:latest"
+
+# =============================================================================
 # Build and Deploy
 # =============================================================================
 
@@ -129,77 +156,56 @@ echo ""
 echo -e "${YELLOW}Setting project to: ${PROJECT_ID}${NC}"
 gcloud config set project ${PROJECT_ID}
 
-# Enable required APIs
-echo -e "${YELLOW}Enabling required APIs...${NC}"
-gcloud services enable cloudbuild.googleapis.com run.googleapis.com containerregistry.googleapis.com
+# Build and push Docker image
+echo -e "${YELLOW}Building and pushing Docker image...${NC}"
+gcloud builds submit --tag ${IMAGE_NAME}:latest --project ${PROJECT_ID}
 
-# Build the Docker image using Cloud Build
-echo -e "${YELLOW}Building Docker image using Cloud Build...${NC}"
-gcloud builds submit --tag ${IMAGE_NAME}:latest .
-
-# Create a temporary env vars file for Cloud Run
-ENV_FILE=$(mktemp)
-cat > ${ENV_FILE} << EOF
-ENVIRONMENT: ${ENVIRONMENT}
-DEBUG: "${DEBUG}"
-LOG_LEVEL: "${LOG_LEVEL}"
-APP_HOST: "${APP_HOST}"
-APP_PORT: "${APP_PORT}"
-DB_DSN: "${DB_DSN}"
-API_KEY: "${API_KEY}"
-ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
-ENABLE_SCHEDULER: "${ENABLE_SCHEDULER}"
-RECONCILIATION_HOUR: "${RECONCILIATION_HOUR}"
-RECONCILIATION_MINUTE: "${RECONCILIATION_MINUTE}"
-WC_API_VERSION: "${WC_API_VERSION}"
-WC_PRODUCTS_PER_PAGE: "${WC_PRODUCTS_PER_PAGE}"
-WC_REQUEST_TIMEOUT: "${WC_REQUEST_TIMEOUT}"
-WEBHOOK_SECRET_LENGTH: "${WEBHOOK_SECRET_LENGTH}"
-ENABLE_EMBEDDINGS: "${ENABLE_EMBEDDINGS}"
-GCP_PROJECT_ID: "${PROJECT_ID}"
-GCP_REGION: "${REGION}"
-EOF
-
-trap "rm -f $ENV_FILE" EXIT
-
-# Deploy to Cloud Run
+# Deploy to Cloud Run (aligned with deploy.yml)
 echo -e "${YELLOW}Deploying to Cloud Run...${NC}"
-gcloud run deploy ${SERVICE_NAME} \
+
+# Build deployment command
+DEPLOY_CMD="gcloud run deploy ${SERVICE_NAME} \
     --image ${IMAGE_NAME}:latest \
     --platform managed \
     --region ${REGION} \
-    --port ${APP_PORT} \
+    --port 8080 \
     --memory ${MEMORY} \
     --cpu ${CPU} \
-    --timeout ${TIMEOUT} \
-    --concurrency ${CONCURRENCY} \
+    --timeout 300 \
     --min-instances ${MIN_INSTANCES} \
     --max-instances ${MAX_INSTANCES} \
     --allow-unauthenticated \
-    --env-vars-file ${ENV_FILE}
+    --set-env-vars ${ENV_VARS} \
+    --set-secrets ${SECRETS}"
+
+# Add concurrency for production (aligned with deploy.yml)
+if [ -n "$CONCURRENCY" ]; then
+    DEPLOY_CMD="${DEPLOY_CMD} --concurrency ${CONCURRENCY}"
+fi
+
+# Execute deployment
+eval ${DEPLOY_CMD}
 
 # =============================================================================
-# Post-deployment
+# Post-deployment (aligned with deploy.yml)
 # =============================================================================
 
 # Get the service URL
-SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --region ${REGION} --format 'value(status.url)')
+SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} \
+    --region=${REGION} \
+    --project=${PROJECT_ID} \
+    --format='value(status.url)' 2>/dev/null)
 
-# Update APP_URL with the deployed service URL
-echo -e "${YELLOW}Updating APP_URL with deployed service URL...${NC}"
-gcloud run services update ${SERVICE_NAME} \
-    --region ${REGION} \
-    --update-env-vars "APP_URL=${SERVICE_URL}"
-
-# Health check
-echo -e "${YELLOW}Testing health endpoint...${NC}"
-sleep 5
-if curl -sf "${SERVICE_URL}/health" > /dev/null 2>&1; then
+# Health check (aligned with deploy.yml - 10 second wait)
+echo -e "${YELLOW}Verifying deployment...${NC}"
+echo "Service URL: ${SERVICE_URL}"
+sleep 10
+if curl -f "${SERVICE_URL}/health" > /dev/null 2>&1; then
     echo -e "${GREEN}Health check passed!${NC}"
-elif curl -sf "${SERVICE_URL}/" > /dev/null 2>&1; then
+elif curl -f "${SERVICE_URL}/" > /dev/null 2>&1; then
     echo -e "${GREEN}Service is responding!${NC}"
 else
-    echo -e "${YELLOW}Warning: Health check failed - service may still be starting${NC}"
+    echo -e "${YELLOW}Health check endpoint not available${NC}"
 fi
 
 # Print summary

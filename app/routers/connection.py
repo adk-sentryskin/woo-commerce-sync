@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import WooCommerceStore, Product
+from app.models import WooCommerceStore, Product, Webhook
 from app.schemas import ConnectionSetup, ConnectionVerify, ConnectionStatus, WooCommerceStoreResponse
 from app.services.woocommerce_client import WooCommerceClient
 from app.middleware.auth import verify_api_key
@@ -134,6 +134,50 @@ async def disconnect_store(merchant_id: str, db: Session = Depends(get_db), _: s
     logger.info(f"Disconnected store for merchant {merchant_id}")
 
     return {"status": "disconnected", "merchant_id": merchant_id, "store_url": store.store_url, "message": "Store has been disconnected. Product data has been preserved."}
+
+
+@router.delete("/delete")
+async def delete_store(merchant_id: str, db: Session = Depends(get_db), _: str = Depends(verify_api_key)):
+    """
+    Permanently delete store and all associated data (products, webhooks).
+    This action cannot be undone.
+    """
+    store = db.query(WooCommerceStore).filter(WooCommerceStore.merchant_id == merchant_id).first()
+
+    if not store:
+        raise HTTPException(status_code=404, detail=f"No store found for merchant: {merchant_id}")
+
+    store_id = store.id
+    store_url = store.store_url
+
+    # Delete webhooks from WooCommerce
+    try:
+        from app.services.webhook_manager import delete_all_webhooks
+        await delete_all_webhooks(store, db)
+    except Exception as e:
+        logger.warning(f"Failed to delete webhooks from WooCommerce during delete: {e}")
+
+    # Delete webhook records from database
+    webhook_count = db.query(Webhook).filter(Webhook.store_id == store_id).delete()
+    logger.info(f"Deleted {webhook_count} webhook records for merchant {merchant_id}")
+
+    # Delete product records from database
+    product_count = db.query(Product).filter(Product.store_id == store_id).delete()
+    logger.info(f"Deleted {product_count} product records for merchant {merchant_id}")
+
+    # Delete the store record
+    db.delete(store)
+    db.commit()
+    logger.info(f"Permanently deleted store for merchant {merchant_id}")
+
+    return {
+        "status": "deleted",
+        "merchant_id": merchant_id,
+        "store_url": store_url,
+        "products_deleted": product_count,
+        "webhooks_deleted": webhook_count,
+        "message": "Store and all associated data have been permanently deleted."
+    }
 
 
 @router.post("/reconnect")
